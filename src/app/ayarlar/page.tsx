@@ -111,7 +111,18 @@ export default function AyarlarPage() {
         }
       }
     } catch (e) {
-      setAuthError(e instanceof Error ? e.message : 'Bir hata oluştu.')
+      const raw = e instanceof Error ? e.message : ''
+      if (raw.includes('already registered') || raw.includes('already exists')) {
+        setAuthError('Bu e-posta adresi zaten kayıtlı.')
+      } else if (raw.includes('Invalid login credentials') || raw.includes('invalid_credentials')) {
+        setAuthError('E-posta veya şifre hatalı.')
+      } else if (raw.includes('Email not confirmed')) {
+        setAuthError('E-posta adresin henüz doğrulanmadı. Gelen kutunu kontrol et.')
+      } else if (raw.includes('Password should be')) {
+        setAuthError('Şifre en az 6 karakter olmalıdır.')
+      } else {
+        setAuthError('Bir hata oluştu. Lütfen tekrar dene.')
+      }
     } finally {
       setAuthLoading(false)
     }

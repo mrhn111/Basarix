@@ -117,8 +117,6 @@ export default function Home() {
     const { data: { session } } = await supabase.auth.getSession()
     if (!session) return
 
-    console.log('[loadData] querying exams for user:', session.user.id)
-
     const { data: exams } = await supabase
       .from('exams')
       .select(`
@@ -135,7 +133,6 @@ export default function Home() {
       .eq('user_id', session.user.id)
       .order('date', { ascending: false })
 
-    console.log('[loadData] exams returned:', exams?.length ?? 'null')
     if (!exams) return
 
     setRecentExams(
@@ -212,11 +209,10 @@ export default function Home() {
       if (pendingAnonId) {
         const { data: { session } } = await supabase.auth.getSession()
         const { data: { user } } = await supabase.auth.getUser()
-        console.log('[merge] pending anon id:', pendingAnonId, '| new user:', user?.id, '| is_anonymous:', user?.is_anonymous)
         if (session && user && !user.is_anonymous) {
           localStorage.removeItem('basarix_pending_merge_anon_id')
           try {
-            const res = await fetch('/api/merge-guest', {
+            await fetch('/api/merge-guest', {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
@@ -224,13 +220,9 @@ export default function Home() {
               },
               body: JSON.stringify({ anonUserId: pendingAnonId }),
             })
-            const body = await res.json()
-            console.log('[merge] result:', res.status, body)
-          } catch (e) {
-            console.error('[merge] fetch error:', e)
+          } catch {
+            // ignore — merge is best-effort
           }
-        } else {
-          console.log('[merge] skipped — no valid non-anonymous session yet')
         }
       }
       // eslint-disable-next-line react-hooks/set-state-in-effect

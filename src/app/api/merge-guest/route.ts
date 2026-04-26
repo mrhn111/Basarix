@@ -43,27 +43,20 @@ export async function POST(request: NextRequest) {
 
   const newUserId = newUserData.user.id
 
-  console.log('[merge-guest] anonUserId:', anonUserId, '→ newUserId:', newUserId)
-
   if (newUserId === anonUserId) {
-    console.log('[merge-guest] same user, nothing to do')
     return NextResponse.json({ ok: true })
   }
 
-  const { error: updateError, count } = await admin
+  const { error: updateError } = await admin
     .from('exams')
     .update({ user_id: newUserId })
     .eq('user_id', anonUserId)
-    .select('id')
-
-  console.log('[merge-guest] rows updated:', count, '| error:', updateError?.message ?? null)
 
   if (updateError) {
     return NextResponse.json({ error: updateError.message }, { status: 500 })
   }
 
-  const { error: deleteError } = await admin.auth.admin.deleteUser(anonUserId)
-  console.log('[merge-guest] anon user deleted:', !deleteError, deleteError?.message ?? null)
+  await admin.auth.admin.deleteUser(anonUserId)
 
-  return NextResponse.json({ ok: true, rowsUpdated: count })
+  return NextResponse.json({ ok: true })
 }
