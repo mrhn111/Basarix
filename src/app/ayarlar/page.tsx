@@ -70,14 +70,20 @@ export default function AyarlarPage() {
       const anonToken = currentSession?.access_token ?? null
 
       if (authMode === 'signup') {
-        if (isAnon && currentUser) {
-          localStorage.setItem('basarix_pending_merge_anon_id', currentUser.id)
+        if (isAnon && anonToken) {
+          const prepRes = await fetch('/api/prepare-merge', {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${anonToken}` },
+          })
+          if (prepRes.ok) {
+            const { token } = await prepRes.json()
+            localStorage.setItem('basarix_pending_merge_token', token)
+          }
         }
         const { data, error } = await supabase.auth.signUp({ email, password })
         if (error) throw error
         if (data.session) {
           setUser(data.user)
-          localStorage.removeItem('basarix_pending_merge_anon_id')
           if (isAnon && anonToken) {
             fetch('/api/merge-guest', {
               method: 'POST',
@@ -85,8 +91,8 @@ export default function AyarlarPage() {
                 'Content-Type': 'application/json',
                 'Authorization': `Bearer ${data.session.access_token}`,
               },
-              body: JSON.stringify({ anonAccessToken: anonToken }),
-            }).catch(() => undefined)
+              body: JSON.stringify({ mergeToken: localStorage.getItem('basarix_pending_merge_token') }),
+            }).then(r => { if (r.ok) localStorage.removeItem('basarix_pending_merge_token') }).catch(() => undefined)
           }
         } else {
           setAuthSuccess('E-posta doğrulama linki gönderildi. Gelen kutunu kontrol et.')
@@ -100,13 +106,17 @@ export default function AyarlarPage() {
         setEmail('')
         setPassword('')
         if (isAnon && anonToken && data.session?.access_token) {
-          fetch('/api/merge-guest', {
+          const newToken = data.session.access_token
+          fetch('/api/prepare-merge', {
             method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${data.session.access_token}`,
-            },
-            body: JSON.stringify({ anonAccessToken: anonToken }),
+            headers: { Authorization: `Bearer ${anonToken}` },
+          }).then(r => r.ok ? r.json() : null).then(body => {
+            if (!body?.token) return
+            fetch('/api/merge-guest', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${newToken}` },
+              body: JSON.stringify({ mergeToken: body.token }),
+            }).catch(() => undefined)
           }).catch(() => undefined)
         }
       }

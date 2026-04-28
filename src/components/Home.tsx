@@ -59,6 +59,15 @@ type ExamHistoryItem = {
   dikkatsizlik: number
 }
 
+type TestResultItem = {
+  date: string
+  subject: string
+  topic: string
+  correct: number
+  total: number
+  tag: string | null
+}
+
 type AiTopic = {
   name: string
   subject: string
@@ -70,6 +79,7 @@ type AiTopic = {
 type AiResult = {
   topics: AiTopic[]
   summary: string | null
+  stale?: boolean
 }
 
 function formatDate(dateStr: string) {
@@ -96,6 +106,7 @@ export default function Home() {
   const [aiLoading, setAiLoading] = useState(false)
   const [examHistoryData, setExamHistoryData] = useState<ExamHistoryItem[]>([])
   const [calledToday, setCalledToday] = useState(false)
+  const [testResultsData, setTestResultsData] = useState<TestResultItem[]>([])
 
   const loadData = useCallback(async () => {
     let aiCached = false
@@ -199,27 +210,56 @@ export default function Home() {
     setWeakCount(weakTopicMap.size)
     setBasariPercent(totalSoru > 0 ? Math.round((totalDogru / totalSoru) * 100) : null)
     setExamHistoryData(examHistory)
+
+    const { data: tests } = await supabase
+      .from('tests')
+      .select(`
+        id, subject, date, dogru, yanlis, bos, tag,
+        test_topics (
+          mufredat ( topic )
+        )
+      `)
+      .eq('user_id', session.user.id)
+      .order('date', { ascending: false })
+
+    if (tests) {
+      const testResults: TestResultItem[] = tests.map(t => {
+        const topics = (t.test_topics as unknown as { mufredat: { topic: string } | null }[])
+          .map(tt => tt.mufredat?.topic ?? '')
+          .filter(Boolean)
+          .join(', ')
+        return {
+          date: t.date,
+          subject: t.subject,
+          topic: topics || t.subject,
+          correct: t.dogru,
+          total: t.dogru + t.yanlis + t.bos,
+          tag: t.tag,
+        }
+      })
+      setTestResultsData(testResults)
+    }
   }, [])
 
   useEffect(() => setMounted(true), [])
 
   useEffect(() => {
     async function init() {
-      const pendingAnonId = localStorage.getItem('basarix_pending_merge_anon_id')
-      if (pendingAnonId) {
+      const pendingMergeToken = localStorage.getItem('basarix_pending_merge_token')
+      if (pendingMergeToken) {
         const { data: { session } } = await supabase.auth.getSession()
         const { data: { user } } = await supabase.auth.getUser()
         if (session && user && !user.is_anonymous) {
-          localStorage.removeItem('basarix_pending_merge_anon_id')
           try {
-            await fetch('/api/merge-guest', {
+            const res = await fetch('/api/merge-guest', {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
                 'Authorization': `Bearer ${session.access_token}`,
               },
-              body: JSON.stringify({ anonUserId: pendingAnonId }),
+              body: JSON.stringify({ mergeToken: pendingMergeToken }),
             })
+            if (res.ok) localStorage.removeItem('basarix_pending_merge_token')
           } catch {
             // ignore — merge is best-effort
           }
@@ -245,15 +285,17 @@ export default function Home() {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${session.access_token}`,
         },
-        body: JSON.stringify({ grade: gradeVal, today: todayStr(), exams: examHistoryData }),
+        body: JSON.stringify({ grade: gradeVal, today: todayStr(), exams: examHistoryData, test_results: testResultsData }),
       })
       if (res.ok) {
         const result = await res.json() as AiResult & { error?: string }
         if (!result.error) {
           setAiResult(result)
-          localStorage.setItem(AI_CACHE_KEY, JSON.stringify({ date: todayStr(), result }))
-          markAiCalled()
-          setCalledToday(true)
+          if (!result.stale) {
+            localStorage.setItem(AI_CACHE_KEY, JSON.stringify({ date: todayStr(), result }))
+            markAiCalled()
+            setCalledToday(true)
+          }
         }
       } else if (res.status === 429) {
         markAiCalled()
@@ -355,9 +397,12 @@ export default function Home() {
                   </div>
                 </>
               )}
-              {calledToday ? (
+              {aiResult?.stale && (
+                <p className="text-xs text-amber-500">Şu an analiz yapılamıyor, önceki sonuç gösteriliyor</p>
+              )}
+              {calledToday && !aiResult?.stale ? (
                 <p className="text-xs text-zinc-400">Bugün güncellendi</p>
-              ) : (
+              ) : !calledToday ? (
                 <button
                   onClick={runAiAnalysis}
                   className="flex items-center gap-1.5 text-xs font-bold text-[#0f766e] active:scale-[0.97] transition-transform"
@@ -365,7 +410,7 @@ export default function Home() {
                   <Zap size={12} />
                   Analizi Güncelle
                 </button>
-              )}
+              ) : null}
             </div>
           )}
         </div>
@@ -421,13 +466,21 @@ export default function Home() {
           )}
         </div>
 
-        {/* ── Add Exam Button ────────────────────────────── */}
-        <button
-          onClick={() => router.push('/exam/new')}
-          className="w-full h-14 bg-[#0f766e]/75 hover:bg-[#0f766e]/85 backdrop-blur-md border border-white/30 active:scale-[0.98] text-white font-extrabold text-base rounded-2xl shadow-[0_8px_24px_rgba(15,118,110,0.25)] transition-all duration-150"
-        >
-          + Sınav Ekle
-        </button>
+        {/* ── Add Buttons ────────────────────────────────── */}
+        <div className="grid grid-cols-2 gap-3">
+          <button
+            onClick={() => router.push('/exam/new')}
+            className="h-14 bg-[#0f766e]/75 hover:bg-[#0f766e]/85 backdrop-blur-md border border-white/30 active:scale-[0.98] text-white font-extrabold text-sm rounded-2xl shadow-[0_8px_24px_rgba(15,118,110,0.25)] transition-all duration-150"
+          >
+            + Sınav Ekle
+          </button>
+          <button
+            onClick={() => router.push('/test/new')}
+            className="h-14 bg-white/65 hover:bg-white/80 backdrop-blur-md border border-white/50 active:scale-[0.98] text-[#0f766e] font-extrabold text-sm rounded-2xl shadow-[0_8px_24px_rgba(15,23,42,0.06)] transition-all duration-150"
+          >
+            + Test Ekle
+          </button>
+        </div>
 
       </div>
 

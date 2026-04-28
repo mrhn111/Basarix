@@ -8,42 +8,39 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
-  const { anonAccessToken, anonUserId: rawAnonUserId } = await request.json()
-  if (!anonAccessToken && !rawAnonUserId) {
-    return NextResponse.json({ error: 'anonAccessToken or anonUserId required' }, { status: 400 })
+  const { mergeToken } = await request.json()
+  if (!mergeToken) {
+    return NextResponse.json({ error: 'mergeToken required' }, { status: 400 })
   }
 
   const admin = getAdminClient()
 
   const { data: newUserData, error: newErr } = await admin.auth.getUser(newToken)
   if (newErr || !newUserData.user) {
-    return NextResponse.json({ error: 'Invalid new session' }, { status: 401 })
+    return NextResponse.json({ error: 'Invalid session' }, { status: 401 })
   }
 
-  let anonUserId: string
-  if (anonAccessToken) {
-    const { data: anonUserData, error: anonErr } = await admin.auth.getUser(anonAccessToken)
-    if (anonErr || !anonUserData.user) {
-      return NextResponse.json({ error: 'Invalid anon session' }, { status: 400 })
-    }
-    if (!anonUserData.user.is_anonymous) {
-      return NextResponse.json({ error: 'Source user is not anonymous' }, { status: 400 })
-    }
-    anonUserId = anonUserData.user.id
-  } else {
-    const { data: anonUserData, error: anonErr } = await admin.auth.admin.getUserById(rawAnonUserId)
-    if (anonErr || !anonUserData.user) {
-      return NextResponse.json({ error: 'Anon user not found' }, { status: 400 })
-    }
-    if (!anonUserData.user.is_anonymous) {
-      return NextResponse.json({ error: 'Source user is not anonymous' }, { status: 400 })
-    }
-    anonUserId = anonUserData.user.id
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const { data: row, error: rowErr } = await (admin as any)
+    .from('pending_guest_merges')
+    .select('anon_user_id, expires_at')
+    .eq('token', mergeToken)
+    .single()
+
+  if (rowErr || !row) {
+    return NextResponse.json({ error: 'Invalid or expired merge token' }, { status: 400 })
+  }
+
+  if (new Date(row.expires_at) < new Date()) {
+    return NextResponse.json({ error: 'Merge token expired' }, { status: 400 })
   }
 
   const newUserId = newUserData.user.id
+  const anonUserId: string = row.anon_user_id
 
   if (newUserId === anonUserId) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (admin as any).from('pending_guest_merges').delete().eq('token', mergeToken)
     return NextResponse.json({ ok: true })
   }
 
@@ -57,6 +54,8 @@ export async function POST(request: NextRequest) {
   }
 
   await admin.auth.admin.deleteUser(anonUserId)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  await (admin as any).from('pending_guest_merges').delete().eq('token', mergeToken)
 
   return NextResponse.json({ ok: true })
 }

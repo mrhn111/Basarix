@@ -17,14 +17,17 @@ export type Database = {
       ai_cache: {
         Row: {
           last_called_at: string
+          result: Json | null
           user_id: string
         }
         Insert: {
           last_called_at?: string
+          result?: Json | null
           user_id: string
         }
         Update: {
           last_called_at?: string
+          result?: Json | null
           user_id?: string
         }
         Relationships: []
@@ -144,6 +147,104 @@ export type Database = {
           unit?: string
         }
         Relationships: []
+      }
+      pending_guest_merges: {
+        Row: {
+          anon_user_id: string
+          created_at: string
+          expires_at: string
+          token: string
+        }
+        Insert: {
+          anon_user_id: string
+          created_at?: string
+          expires_at: string
+          token: string
+        }
+        Update: {
+          anon_user_id?: string
+          created_at?: string
+          expires_at?: string
+          token?: string
+        }
+        Relationships: []
+      }
+      test_topics: {
+        Row: {
+          id: string
+          mufredat_topic_id: string
+          test_id: string
+        }
+        Insert: {
+          id?: string
+          mufredat_topic_id: string
+          test_id: string
+        }
+        Update: {
+          id?: string
+          mufredat_topic_id?: string
+          test_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "test_topics_mufredat_topic_id_fkey"
+            columns: ["mufredat_topic_id"]
+            isOneToOne: false
+            referencedRelation: "mufredat"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "test_topics_test_id_fkey"
+            columns: ["test_id"]
+            isOneToOne: false
+            referencedRelation: "tests"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      tests: {
+        Row: {
+          bos: number
+          created_at: string
+          date: string
+          dogru: number
+          id: string
+          subject: string
+          tag: string | null
+          user_id: string
+          yanlis: number
+        }
+        Insert: {
+          bos?: number
+          created_at?: string
+          date: string
+          dogru?: number
+          id?: string
+          subject: string
+          tag?: string | null
+          user_id: string
+          yanlis?: number
+        }
+        Update: {
+          bos?: number
+          created_at?: string
+          date?: string
+          dogru?: number
+          id?: string
+          subject?: string
+          tag?: string | null
+          user_id?: string
+          yanlis?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "tests_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       users: {
         Row: {

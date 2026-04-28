@@ -13,13 +13,28 @@ type ExamHistoryItem = {
   dikkatsizlik: number
 }
 
+type TestResultItem = {
+  date: string
+  subject: string
+  topic: string
+  correct: number
+  total: number
+  tag: string | null
+}
+
 type ApiPayload = {
   grade: number
   today: string
   exams: ExamHistoryItem[]
+  test_results?: TestResultItem[]
 }
 
-const SYSTEM_INSTRUCTION = `Sen bir Türk öğrenci koçusun. Sana bir öğrencinin sınav geçmişi verilecek. Bu veriyi analiz et ve şunları belirle:
+type AiResult = {
+  topics: unknown[]
+  summary: string | null
+}
+
+const SYSTEM_INSTRUCTION = `Sen bir Türk öğrenci koçusun. Sana bir öğrencinin sınav geçmişi verilecek (ve varsa test sonuçları). Bu veriyi analiz et ve şunları belirle:
 1. Hangi konular sürekli yanlış yapılıyor ve kötüleşiyor?
 2. Hangi yanlışlar bilgi eksikliğinden, hangisi dikkatsizlikten?
 3. Sınav türüne göre performans farkı var mı?
@@ -41,13 +56,25 @@ Yanıtını şu JSON formatında ver:
 
 Sadece JSON döndür, başka hiçbir şey yazma.`
 
+const MODELS = ['gemini-2.5-flash-lite', 'gemini-2.5-flash'] as const
+
+async function callGemini(apiKey: string, model: string, body: object): Promise<Response> {
+  return fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }
+  )
+}
+
 export async function POST(request: NextRequest) {
   const apiKey = process.env.GEMINI_API_KEY
   if (!apiKey) {
     return NextResponse.json({ error: 'API key not configured' }, { status: 500 })
   }
 
-  // Auth check
   const authHeader = request.headers.get('Authorization')
   const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null
   if (!token) {
@@ -60,22 +87,15 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
-  // Size guard (50KB)
-  const contentLength = request.headers.get('content-length')
-  if (contentLength && parseInt(contentLength) > 50_000) {
-    return NextResponse.json({ error: 'Payload too large' }, { status: 413 })
-  }
-
-  // Rate limit: once per user per day via ai_cache table
   const admin = getAdminClient()
   const todayStart = new Date()
   todayStart.setUTCHours(0, 0, 0, 0)
 
   const { data: cacheRow } = await admin
     .from('ai_cache')
-    .select('last_called_at')
+    .select('last_called_at, result')
     .eq('user_id', user.id)
-    .single()
+    .single() as { data: { last_called_at: string; result: AiResult | null } | null }
 
   if (cacheRow) {
     const lastCalled = new Date(cacheRow.last_called_at)
@@ -84,14 +104,23 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  const { grade, today, exams }: ApiPayload = await request.json()
+  const rawBody = await request.text()
+  if (Buffer.byteLength(rawBody, 'utf8') > 50_000) {
+    return NextResponse.json({ error: 'Payload too large' }, { status: 413 })
+  }
+  let payload: ApiPayload
+  try {
+    payload = JSON.parse(rawBody) as ApiPayload
+  } catch {
+    return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 })
+  }
+  const { grade, today, exams, test_results = [] } = payload
 
   if (!exams || exams.length === 0) {
     return NextResponse.json({ topics: [], summary: null })
   }
 
   const sorted = [...exams].sort((a, b) => a.date.localeCompare(b.date))
-
   const grouped = new Map<string, ExamHistoryItem[]>()
   for (const item of sorted) {
     const key = `${item.date}|${item.type}`
@@ -116,22 +145,37 @@ export async function POST(request: NextRequest) {
     })
     .join('\n\n')
 
-  const userMessage = `Öğrenci: ${grade}. Sınıf\nBugün: ${today}\n\nSınav Geçmişi:\n${historyText}`
+  const testText = test_results.length > 0
+    ? '\n\nTest Sonuçları:\n' + test_results
+        .map(t => {
+          const pct = t.total > 0 ? Math.round((t.correct / t.total) * 100) : 0
+          const tagLabel = t.tag === 'bilgi_eksikligi' ? 'Bilgi Eksikliği'
+            : t.tag === 'dikkat_hatasi' ? 'Dikkat Hatası'
+            : null
+          return `  - ${t.subject}: ${t.topic} | ${t.correct}/${t.total} (%${pct})${tagLabel ? ` [${tagLabel}]` : ''}`
+        })
+        .join('\n')
+    : ''
 
-  const geminiRes = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${apiKey}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: SYSTEM_INSTRUCTION }] },
-        contents: [{ role: 'user', parts: [{ text: userMessage }] }],
-        generationConfig: { temperature: 0.3, maxOutputTokens: 1024 },
-      }),
+  const userMessage = `Öğrenci: ${grade}. Sınıf\nBugün: ${today}\n\nSınav Geçmişi:\n${historyText}${testText}`
+
+  const geminiBody = {
+    systemInstruction: { parts: [{ text: SYSTEM_INSTRUCTION }] },
+    contents: [{ role: 'user', parts: [{ text: userMessage }] }],
+    generationConfig: { temperature: 0.3, maxOutputTokens: 1024 },
+  }
+
+  // Try flash-lite first, fall back to flash on 429
+  let geminiRes: Response | null = null
+  for (const model of MODELS) {
+    geminiRes = await callGemini(apiKey, model, geminiBody)
+    if (geminiRes.status !== 429) break
+  }
+
+  if (!geminiRes || !geminiRes.ok) {
+    if (cacheRow?.result) {
+      return NextResponse.json({ ...cacheRow.result, stale: true })
     }
-  )
-
-  if (!geminiRes.ok) {
     return NextResponse.json({ error: 'Gemini API error' }, { status: 502 })
   }
 
@@ -141,17 +185,19 @@ export async function POST(request: NextRequest) {
   try {
     const jsonText = text.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim()
     const parsed = JSON.parse(jsonText)
-
-    // Update ai_cache after successful Gemini call
-    await admin.from('ai_cache').upsert({
-      user_id: user.id,
-      last_called_at: new Date().toISOString(),
-    })
-
-    return NextResponse.json({
+    const result: AiResult = {
       topics: (parsed.topics ?? []).slice(0, 3),
       summary: parsed.summary ?? null,
+    }
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (admin as any).from('ai_cache').upsert({
+      user_id: user.id,
+      last_called_at: new Date().toISOString(),
+      result,
     })
+
+    return NextResponse.json(result)
   } catch {
     return NextResponse.json({ error: 'Parse error' }, { status: 502 })
   }
