@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { ChevronDown, Download, LogOut, User, Sun, Moon } from 'lucide-react'
+import { ChevronDown, Download, LogOut, User } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import BottomNav from '@/components/BottomNav'
 import type { User as SupabaseUser } from '@supabase/supabase-js'
@@ -19,10 +19,6 @@ export default function AyarlarPage() {
   const [alan, setAlanState] = useState<string | null>(() => {
     if (typeof window === 'undefined') return null
     return localStorage.getItem('basarix_alan')
-  })
-  const [theme, setTheme] = useState<'light' | 'dark'>(() => {
-    if (typeof window === 'undefined') return 'light'
-    return (localStorage.getItem('basarix_theme') as 'light' | 'dark') || 'light'
   })
   const [authMode, setAuthMode] = useState<'login' | 'signup'>('login')
   const [email, setEmail] = useState('')
@@ -52,13 +48,6 @@ export default function AyarlarPage() {
     localStorage.setItem('basarix_alan', a)
   }
 
-  function toggleTheme() {
-    const next = theme === 'light' ? 'dark' : 'light'
-    setTheme(next)
-    localStorage.setItem('basarix_theme', next)
-    document.documentElement.classList.toggle('dark', next === 'dark')
-  }
-
   async function handleAuth() {
     setAuthLoading(true)
     setAuthError(null)
@@ -70,31 +59,26 @@ export default function AyarlarPage() {
       const anonToken = currentSession?.access_token ?? null
 
       if (authMode === 'signup') {
+        let mergeReady = false
         if (isAnon && anonToken) {
           const prepRes = await fetch('/api/prepare-merge', {
             method: 'POST',
             headers: { Authorization: `Bearer ${anonToken}` },
           })
-          if (prepRes.ok) {
-            const { token } = await prepRes.json()
-            localStorage.setItem('basarix_pending_merge_token', token)
-          }
+          mergeReady = prepRes.ok
         }
         const { data, error } = await supabase.auth.signUp({ email, password })
         if (error) throw error
         if (data.session) {
           setUser(data.user)
-          if (isAnon && anonToken) {
+          if (mergeReady) {
             fetch('/api/merge-guest', {
               method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${data.session.access_token}`,
-              },
-              body: JSON.stringify({ mergeToken: localStorage.getItem('basarix_pending_merge_token') }),
-            }).then(r => { if (r.ok) localStorage.removeItem('basarix_pending_merge_token') }).catch(() => undefined)
+              headers: { 'Authorization': `Bearer ${data.session.access_token}` },
+            }).catch(() => undefined)
           }
         } else {
+          if (mergeReady) localStorage.setItem('basarix_merge_pending', '1')
           setAuthSuccess('E-posta doğrulama linki gönderildi. Gelen kutunu kontrol et.')
         }
         setEmail('')
@@ -111,11 +95,10 @@ export default function AyarlarPage() {
             method: 'POST',
             headers: { Authorization: `Bearer ${anonToken}` },
           }).then(r => r.ok ? r.json() : null).then(body => {
-            if (!body?.token) return
+            if (!body?.ok) return
             fetch('/api/merge-guest', {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${newToken}` },
-              body: JSON.stringify({ mergeToken: body.token }),
+              headers: { Authorization: `Bearer ${newToken}` },
             }).catch(() => undefined)
           }).catch(() => undefined)
         }
@@ -170,6 +153,11 @@ export default function AyarlarPage() {
 
       if (!data) return
 
+      function csvCell(val: string): string {
+        const safe = /^[=+\-@\t\r]/.test(val) ? `'${val}` : val
+        return `"${safe.replace(/"/g, '""')}"`
+      }
+
       const rows: string[] = ['Tarih,Sınav Türü,Ders,Konu,Doğru,Yanlış,Boş,Bilgi Eksikliği,Dikkat Hatası']
       for (const exam of data) {
         for (const et of exam.exam_topics) {
@@ -185,7 +173,7 @@ export default function AyarlarPage() {
             const dikkat = tags.filter(t => t.tag === 'dikkat_hatasi').reduce((s, t) => s + t.count, 0)
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             const muf = et.mufredat as any
-            rows.push(`${exam.date},${exam.type},"${muf.subject}","${muf.topic}",${r.dogru},${r.yanlis},${r.bos},${bilgi},${dikkat}`)
+            rows.push([exam.date, exam.type, csvCell(muf.subject), csvCell(muf.topic), r.dogru, r.yanlis, r.bos, bilgi, dikkat].join(','))
           }
         }
       }
@@ -208,21 +196,21 @@ export default function AyarlarPage() {
 
   return (
     <div className="relative min-h-screen pb-28">
-      <header className="sticky top-0 z-20 px-5 py-4 bg-white/55 dark:bg-zinc-950/70 backdrop-blur-md border-b border-white/40 dark:border-zinc-800/50">
-        <span className="text-xl font-black tracking-tight text-zinc-900 dark:text-zinc-100">Ayarlar</span>
+      <header className="sticky top-0 z-20 px-5 py-4 bg-white/55 backdrop-blur-md border-b border-white/40">
+        <span className="text-xl font-black tracking-tight text-zinc-900">Ayarlar</span>
       </header>
 
       <div className="px-5 pt-5 pb-4 space-y-4">
 
         {/* ── Hesap ─────────────────────────────────────── */}
-        <div className="bg-white/65 dark:bg-zinc-900/60 backdrop-blur-md rounded-3xl border border-white/50 dark:border-zinc-700/50 overflow-hidden">
-          <div className="px-5 py-3 border-b border-zinc-100/70 dark:border-zinc-800/50">
+        <div className="bg-white/65 backdrop-blur-md rounded-3xl border border-white/50 overflow-hidden">
+          <div className="px-5 py-3 border-b border-zinc-100/70">
             <h2 className="text-[11px] font-bold text-zinc-400 uppercase tracking-widest">Hesap</h2>
           </div>
 
           {isGuest ? (
             <div className="p-5 space-y-3">
-              <p className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">
+              <p className="text-sm font-semibold text-zinc-700">
                 {authMode === 'signup' ? 'Hesap Oluştur' : 'Giriş Yap'}
               </p>
               {authMode === 'signup' && (
@@ -235,7 +223,7 @@ export default function AyarlarPage() {
                 placeholder="E-posta"
                 value={email}
                 onChange={e => setEmail(e.target.value)}
-                className="w-full px-4 py-3 rounded-2xl bg-zinc-100/70 dark:bg-zinc-800/70 text-sm text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 outline-none"
+                className="w-full px-4 py-3 rounded-2xl bg-zinc-100/70 text-sm text-zinc-900 placeholder-zinc-400 outline-none"
               />
               <input
                 type="password"
@@ -243,7 +231,7 @@ export default function AyarlarPage() {
                 value={password}
                 onChange={e => setPassword(e.target.value)}
                 onKeyDown={e => e.key === 'Enter' && handleAuth()}
-                className="w-full px-4 py-3 rounded-2xl bg-zinc-100/70 dark:bg-zinc-800/70 text-sm text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 outline-none"
+                className="w-full px-4 py-3 rounded-2xl bg-zinc-100/70 text-sm text-zinc-900 placeholder-zinc-400 outline-none"
               />
               {authError && <p className="text-xs text-rose-500">{authError}</p>}
               {authSuccess && <p className="text-xs text-emerald-500">{authSuccess}</p>}
@@ -283,13 +271,13 @@ export default function AyarlarPage() {
                   <User size={16} />
                 </div>
                 <div className="min-w-0">
-                  <p className="text-sm font-semibold text-zinc-900 dark:text-zinc-100 truncate">{user?.email}</p>
+                  <p className="text-sm font-semibold text-zinc-900 truncate">{user?.email}</p>
                   <p className="text-xs text-zinc-400">Kayıtlı hesap</p>
                 </div>
               </div>
               <button
                 onClick={handleSignOut}
-                className="shrink-0 flex items-center gap-1.5 text-xs font-semibold text-rose-500 px-3 py-2 rounded-xl bg-rose-50/70 dark:bg-rose-950/30 active:scale-[0.97] transition-transform"
+                className="shrink-0 flex items-center gap-1.5 text-xs font-semibold text-rose-500 px-3 py-2 rounded-xl bg-rose-50/70 active:scale-[0.97] transition-transform"
               >
                 <LogOut size={14} />
                 Çıkış Yap
@@ -299,18 +287,18 @@ export default function AyarlarPage() {
         </div>
 
         {/* ── Profil ────────────────────────────────────── */}
-        <div className="bg-white/65 dark:bg-zinc-900/60 backdrop-blur-md rounded-3xl border border-white/50 dark:border-zinc-700/50 overflow-hidden">
-          <div className="px-5 py-3 border-b border-zinc-100/70 dark:border-zinc-800/50">
+        <div className="bg-white/65 backdrop-blur-md rounded-3xl border border-white/50 overflow-hidden">
+          <div className="px-5 py-3 border-b border-zinc-100/70">
             <h2 className="text-[11px] font-bold text-zinc-400 uppercase tracking-widest">Profil</h2>
           </div>
-          <div className="divide-y divide-zinc-100/70 dark:divide-zinc-800/50">
+          <div className="divide-y divide-zinc-100/70">
             <div className="px-5 py-4 flex items-center justify-between">
-              <p className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">Sınıf</p>
+              <p className="text-sm font-semibold text-zinc-900">Sınıf</p>
               <div className="relative">
                 <select
                   value={grade}
                   onChange={e => changeGrade(parseInt(e.target.value))}
-                  className="appearance-none pl-3 pr-7 py-1.5 rounded-xl bg-zinc-100/70 dark:bg-zinc-800/70 text-sm font-bold text-zinc-900 dark:text-zinc-100 outline-none cursor-pointer"
+                  className="appearance-none pl-3 pr-7 py-1.5 rounded-xl bg-zinc-100/70 text-sm font-bold text-zinc-900 outline-none cursor-pointer"
                 >
                   {GRADES.map(g => <option key={g} value={g}>{g}. Sınıf</option>)}
                 </select>
@@ -319,12 +307,12 @@ export default function AyarlarPage() {
             </div>
             {grade === 12 && (
               <div className="px-5 py-4 flex items-center justify-between">
-                <p className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">Alan</p>
+                <p className="text-sm font-semibold text-zinc-900">Alan</p>
                 <div className="relative">
                   <select
                     value={alan ?? ''}
                     onChange={e => changeAlan(e.target.value)}
-                    className="appearance-none pl-3 pr-7 py-1.5 rounded-xl bg-zinc-100/70 dark:bg-zinc-800/70 text-sm font-bold text-zinc-900 dark:text-zinc-100 outline-none cursor-pointer"
+                    className="appearance-none pl-3 pr-7 py-1.5 rounded-xl bg-zinc-100/70 text-sm font-bold text-zinc-900 outline-none cursor-pointer"
                   >
                     <option value="">Seç</option>
                     {ALAN_OPTIONS.map(a => <option key={a} value={a}>{a}</option>)}
@@ -336,34 +324,9 @@ export default function AyarlarPage() {
           </div>
         </div>
 
-        {/* ── Görünüm ───────────────────────────────────── */}
-        <div className="bg-white/65 dark:bg-zinc-900/60 backdrop-blur-md rounded-3xl border border-white/50 dark:border-zinc-700/50 overflow-hidden">
-          <div className="px-5 py-3 border-b border-zinc-100/70 dark:border-zinc-800/50">
-            <h2 className="text-[11px] font-bold text-zinc-400 uppercase tracking-widest">Görünüm</h2>
-          </div>
-          <div className="px-5 py-4 flex items-center justify-between">
-            <div className="flex items-center gap-2.5">
-              {theme === 'light'
-                ? <Sun size={16} className="text-amber-500" />
-                : <Moon size={16} className="text-indigo-400" />}
-              <p className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
-                {theme === 'light' ? 'Açık Tema' : 'Koyu Tema'}
-              </p>
-            </div>
-            <button
-              onClick={toggleTheme}
-              className={`relative w-12 h-6 rounded-full transition-colors duration-200 ${theme === 'dark' ? 'bg-teal-500' : 'bg-gray-300'}`}
-            >
-              <span
-                className={`absolute top-1 w-4 h-4 bg-white rounded-full shadow transition-transform duration-200 ${theme === 'dark' ? 'translate-x-6' : 'translate-x-1'}`}
-              />
-            </button>
-          </div>
-        </div>
-
         {/* ── Veri ──────────────────────────────────────── */}
-        <div className="bg-white/65 dark:bg-zinc-900/60 backdrop-blur-md rounded-3xl border border-white/50 dark:border-zinc-700/50 overflow-hidden">
-          <div className="px-5 py-3 border-b border-zinc-100/70 dark:border-zinc-800/50">
+        <div className="bg-white/65 backdrop-blur-md rounded-3xl border border-white/50 overflow-hidden">
+          <div className="px-5 py-3 border-b border-zinc-100/70">
             <h2 className="text-[11px] font-bold text-zinc-400 uppercase tracking-widest">Veri</h2>
           </div>
           <div className="px-5 py-4">
