@@ -47,27 +47,6 @@ type RecentExam = {
   is_completed: boolean
 }
 
-type ExamHistoryItem = {
-  type: string
-  date: string
-  subject: string
-  topic: string
-  dogru: number
-  yanlis: number
-  bos: number
-  bilgiEksikligi: number
-  dikkatsizlik: number
-}
-
-type TestResultItem = {
-  date: string
-  subject: string
-  topic: string
-  correct: number
-  total: number
-  tag: string | null
-}
-
 type AiTopic = {
   name: string
   subject: string
@@ -104,9 +83,7 @@ export default function Home() {
   const [recentExams, setRecentExams] = useState<RecentExam[]>([])
   const [aiResult, setAiResult] = useState<AiResult | null>(null)
   const [aiLoading, setAiLoading] = useState(false)
-  const [examHistoryData, setExamHistoryData] = useState<ExamHistoryItem[]>([])
   const [calledToday, setCalledToday] = useState(false)
-  const [testResultsData, setTestResultsData] = useState<TestResultItem[]>([])
 
   const loadData = useCallback(async () => {
     let aiCached = false
@@ -161,7 +138,6 @@ export default function Home() {
     let totalDogru = 0
     let totalSoru = 0
     const weakTopicMap = new Map<string, number>()
-    const examHistory: ExamHistoryItem[] = []
 
     for (const exam of completed) {
       for (const topic of exam.exam_topics) {
@@ -179,29 +155,12 @@ export default function Home() {
           const bilgiCount = (tags as { tag: string; count: number }[])
             .filter(t => t.tag === 'bilgi_eksikligi')
             .reduce((s, t) => s + t.count, 0)
-          const dikkatCount = (tags as { tag: string; count: number }[])
-            .filter(t => t.tag === 'dikkat_hatasi')
-            .reduce((s, t) => s + t.count, 0)
 
-          if (topic.mufredat) {
-            const muf = topic.mufredat as unknown as { subject: string; topic: string }
-            examHistory.push({
-              type: exam.type,
-              date: exam.date,
-              subject: muf.subject,
-              topic: muf.topic,
-              dogru: result.dogru,
-              yanlis: result.yanlis,
-              bos: result.bos,
-              bilgiEksikligi: bilgiCount,
-              dikkatsizlik: dikkatCount,
-            })
-            if (bilgiCount > 0) {
-              weakTopicMap.set(
-                topic.mufredat_topic_id,
-                (weakTopicMap.get(topic.mufredat_topic_id) ?? 0) + bilgiCount
-              )
-            }
+          if (topic.mufredat && bilgiCount > 0) {
+            weakTopicMap.set(
+              topic.mufredat_topic_id,
+              (weakTopicMap.get(topic.mufredat_topic_id) ?? 0) + bilgiCount
+            )
           }
         }
       }
@@ -209,57 +168,25 @@ export default function Home() {
 
     setWeakCount(weakTopicMap.size)
     setBasariPercent(totalSoru > 0 ? Math.round((totalDogru / totalSoru) * 100) : null)
-    setExamHistoryData(examHistory)
-
-    const { data: tests } = await supabase
-      .from('tests')
-      .select(`
-        id, subject, date, dogru, yanlis, bos, tag,
-        test_topics (
-          mufredat ( topic )
-        )
-      `)
-      .eq('user_id', session.user.id)
-      .order('date', { ascending: false })
-
-    if (tests) {
-      const testResults: TestResultItem[] = tests.map(t => {
-        const topics = (t.test_topics as unknown as { mufredat: { topic: string } | null }[])
-          .map(tt => tt.mufredat?.topic ?? '')
-          .filter(Boolean)
-          .join(', ')
-        return {
-          date: t.date,
-          subject: t.subject,
-          topic: topics || t.subject,
-          correct: t.dogru,
-          total: t.dogru + t.yanlis + t.bos,
-          tag: t.tag,
-        }
-      })
-      setTestResultsData(testResults)
-    }
   }, [])
 
   useEffect(() => setMounted(true), [])
 
   useEffect(() => {
     async function init() {
-      const pendingMergeToken = localStorage.getItem('basarix_pending_merge_token')
-      if (pendingMergeToken) {
+      // one-time cleanup for stale localStorage token from previous code
+      localStorage.removeItem('basarix_pending_merge_token')
+
+      if (localStorage.getItem('basarix_merge_pending') === '1') {
         const { data: { session } } = await supabase.auth.getSession()
         const { data: { user } } = await supabase.auth.getUser()
         if (session && user && !user.is_anonymous) {
           try {
             const res = await fetch('/api/merge-guest', {
               method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${session.access_token}`,
-              },
-              body: JSON.stringify({ mergeToken: pendingMergeToken }),
+              headers: { 'Authorization': `Bearer ${session.access_token}` },
             })
-            if (res.ok) localStorage.removeItem('basarix_pending_merge_token')
+            if (res.ok) localStorage.removeItem('basarix_merge_pending')
           } catch {
             // ignore — merge is best-effort
           }
@@ -275,7 +202,7 @@ export default function Home() {
 
   async function runAiAnalysis() {
     const { data: { session } } = await supabase.auth.getSession()
-    if (!session || examHistoryData.length === 0) return
+    if (!session || examCount === 0) return
     const gradeVal = parseInt(localStorage.getItem('basarix_grade') ?? '7') || 7
     setAiLoading(true)
     try {
@@ -285,7 +212,7 @@ export default function Home() {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${session.access_token}`,
         },
-        body: JSON.stringify({ grade: gradeVal, today: todayStr(), exams: examHistoryData, test_results: testResultsData }),
+        body: JSON.stringify({ grade: gradeVal, today: todayStr() }),
       })
       if (res.ok) {
         const result = await res.json() as AiResult & { error?: string }

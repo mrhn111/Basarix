@@ -33,5 +33,13 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Failed to prepare merge' }, { status: 500 })
   }
 
-  return NextResponse.json({ token: mergeToken })
+  const response = NextResponse.json({ ok: true })
+  response.cookies.set('basarix_merge', mergeToken, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    path: '/',
+    maxAge: 60 * 60, // 1 hour — tighter than DB expiry as an extra safeguard
+  })
+  return response
 }

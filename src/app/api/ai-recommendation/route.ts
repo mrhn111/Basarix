@@ -1,34 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServerClient, getAdminClient } from '@/lib/supabase-server'
 
-type ExamHistoryItem = {
-  type: string
-  date: string
-  subject: string
-  topic: string
-  dogru: number
-  yanlis: number
-  bos: number
-  bilgiEksikligi: number
-  dikkatsizlik: number
-}
-
-type TestResultItem = {
-  date: string
-  subject: string
-  topic: string
-  correct: number
-  total: number
-  tag: string | null
-}
-
-type ApiPayload = {
-  grade: number
-  today: string
-  exams: ExamHistoryItem[]
-  test_results?: TestResultItem[]
-}
-
 type AiResult = {
   topics: unknown[]
   summary: string | null
@@ -104,60 +76,83 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  const rawBody = await request.text()
-  if (Buffer.byteLength(rawBody, 'utf8') > 50_000) {
-    return NextResponse.json({ error: 'Payload too large' }, { status: 413 })
-  }
-  let payload: ApiPayload
+  let grade: number
+  let today: string
   try {
-    payload = JSON.parse(rawBody) as ApiPayload
+    const body = JSON.parse(await request.text()) as { grade?: unknown; today?: unknown }
+    grade = Number(body.grade)
+    today = typeof body.today === 'string' ? body.today.slice(0, 10) : new Date().toISOString().slice(0, 10)
   } catch {
     return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 })
   }
-  const { grade, today, exams, test_results = [] } = payload
+
+  if (!Number.isInteger(grade) || grade < 7 || grade > 12) {
+    return NextResponse.json({ error: 'Invalid grade' }, { status: 400 })
+  }
+
+  // Fetch exam history server-side — never trust client-supplied data for the prompt
+  const { data: exams } = await admin
+    .from('exams')
+    .select(`
+      id, type, date,
+      exam_topics (
+        mufredat ( subject, topic ),
+        exam_results (
+          dogru, yanlis, bos,
+          wrong_tags ( tag, count )
+        )
+      )
+    `)
+    .eq('user_id', user.id)
+    .eq('is_completed', true)
+    .order('date', { ascending: true })
 
   if (!exams || exams.length === 0) {
     return NextResponse.json({ topics: [], summary: null })
   }
 
-  const sorted = [...exams].sort((a, b) => a.date.localeCompare(b.date))
-  const grouped = new Map<string, ExamHistoryItem[]>()
-  for (const item of sorted) {
-    const key = `${item.date}|${item.type}`
-    const group = grouped.get(key) ?? []
-    group.push(item)
-    grouped.set(key, group)
+  const { data: tests } = await admin
+    .from('tests')
+    .select(`id, subject, date, dogru, yanlis, bos, tag, test_topics ( mufredat ( topic ) )`)
+    .eq('user_id', user.id)
+    .order('date', { ascending: true })
+
+  // Build exam history text
+  type ExamTopic = {
+    mufredat: { subject: string; topic: string } | null
+    exam_results: { dogru: number; yanlis: number; bos: number; wrong_tags: { tag: string; count: number }[] } | { dogru: number; yanlis: number; bos: number; wrong_tags: { tag: string; count: number }[] }[]
   }
 
-  const historyText = Array.from(grouped.entries())
-    .map(([key, items]) => {
-      const [date, type] = key.split('|')
-      const lines = items
-        .map(item => {
-          let line = `  - ${item.subject}: ${item.topic} | D:${item.dogru} Y:${item.yanlis} B:${item.bos}`
-          if (item.bilgiEksikligi > 0 || item.dikkatsizlik > 0) {
-            line += ` (Bilgi Eksikliği:${item.bilgiEksikligi} Dikkat Hatası:${item.dikkatsizlik})`
-          }
-          return line
-        })
-        .join('\n')
-      return `${type.toUpperCase()} | ${date}\n${lines}`
+  const historyLines: string[] = []
+  for (const exam of exams as unknown as { type: string; date: string; exam_topics: ExamTopic[] }[]) {
+    const lines = (exam.exam_topics ?? []).flatMap((et: ExamTopic) => {
+      const muf = et.mufredat
+      if (!muf) return []
+      const results = Array.isArray(et.exam_results) ? et.exam_results : et.exam_results ? [et.exam_results] : []
+      return results.map(r => {
+        const tags = Array.isArray(r.wrong_tags) ? r.wrong_tags : []
+        const bilgi = tags.filter((t: { tag: string }) => t.tag === 'bilgi_eksikligi').reduce((s, t) => s + t.count, 0)
+        const dikkat = tags.filter((t: { tag: string }) => t.tag === 'dikkat_hatasi').reduce((s, t) => s + t.count, 0)
+        let line = `  - ${muf.subject}: ${muf.topic} | D:${r.dogru} Y:${r.yanlis} B:${r.bos}`
+        if (bilgi > 0 || dikkat > 0) line += ` (Bilgi Eksikliği:${bilgi} Dikkat Hatası:${dikkat})`
+        return line
+      })
     })
-    .join('\n\n')
+    if (lines.length) historyLines.push(`${exam.type.toUpperCase()} | ${exam.date}\n${lines.join('\n')}`)
+  }
 
-  const testText = test_results.length > 0
-    ? '\n\nTest Sonuçları:\n' + test_results
-        .map(t => {
-          const pct = t.total > 0 ? Math.round((t.correct / t.total) * 100) : 0
-          const tagLabel = t.tag === 'bilgi_eksikligi' ? 'Bilgi Eksikliği'
-            : t.tag === 'dikkat_hatasi' ? 'Dikkat Hatası'
-            : null
-          return `  - ${t.subject}: ${t.topic} | ${t.correct}/${t.total} (%${pct})${tagLabel ? ` [${tagLabel}]` : ''}`
-        })
-        .join('\n')
-    : ''
+  // Build test results text
+  const testLines = (tests ?? []).map(t => {
+    const ta = t as unknown as { subject: string; date: string; dogru: number; yanlis: number; bos: number; tag: string | null; test_topics: { mufredat: { topic: string } | null }[] }
+    const topics = (ta.test_topics ?? []).map(tt => tt.mufredat?.topic ?? '').filter(Boolean).join(', ')
+    const total = ta.dogru + ta.yanlis + ta.bos
+    const pct = total > 0 ? Math.round((ta.dogru / total) * 100) : 0
+    const tagLabel = ta.tag === 'bilgi_eksikligi' ? 'Bilgi Eksikliği' : ta.tag === 'dikkat_hatasi' ? 'Dikkat Hatası' : null
+    return `  - ${ta.subject}: ${topics || '—'} | ${ta.dogru}/${total} (%${pct})${tagLabel ? ` [${tagLabel}]` : ''}`
+  })
 
-  const userMessage = `Öğrenci: ${grade}. Sınıf\nBugün: ${today}\n\nSınav Geçmişi:\n${historyText}${testText}`
+  const testText = testLines.length > 0 ? '\n\nTest Sonuçları:\n' + testLines.join('\n') : ''
+  const userMessage = `Öğrenci: ${grade}. Sınıf\nBugün: ${today}\n\nSınav Geçmişi:\n${historyLines.join('\n\n') || '(yok)'}${testText}`
 
   const geminiBody = {
     systemInstruction: { parts: [{ text: SYSTEM_INSTRUCTION }] },
@@ -165,7 +160,6 @@ export async function POST(request: NextRequest) {
     generationConfig: { temperature: 0.3, maxOutputTokens: 1024 },
   }
 
-  // Try flash-lite first, fall back to flash on 429
   let geminiRes: Response | null = null
   for (const model of MODELS) {
     geminiRes = await callGemini(apiKey, model, geminiBody)

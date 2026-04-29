@@ -8,9 +8,9 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
-  const { mergeToken } = await request.json()
+  const mergeToken = request.cookies.get('basarix_merge')?.value
   if (!mergeToken) {
-    return NextResponse.json({ error: 'mergeToken required' }, { status: 400 })
+    return NextResponse.json({ error: 'No merge token' }, { status: 400 })
   }
 
   const admin = getAdminClient()
@@ -27,12 +27,17 @@ export async function POST(request: NextRequest) {
     .eq('token', mergeToken)
     .single()
 
+  function clearCookie(res: NextResponse) {
+    res.cookies.set('basarix_merge', '', { maxAge: 0, path: '/' })
+    return res
+  }
+
   if (rowErr || !row) {
-    return NextResponse.json({ error: 'Invalid or expired merge token' }, { status: 400 })
+    return clearCookie(NextResponse.json({ error: 'Invalid or expired merge token' }, { status: 400 }))
   }
 
   if (new Date(row.expires_at) < new Date()) {
-    return NextResponse.json({ error: 'Merge token expired' }, { status: 400 })
+    return clearCookie(NextResponse.json({ error: 'Merge token expired' }, { status: 400 }))
   }
 
   const newUserId = newUserData.user.id
@@ -41,7 +46,7 @@ export async function POST(request: NextRequest) {
   if (newUserId === anonUserId) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await (admin as any).from('pending_guest_merges').delete().eq('token', mergeToken)
-    return NextResponse.json({ ok: true })
+    return clearCookie(NextResponse.json({ ok: true }))
   }
 
   const { error: updateError } = await admin
@@ -53,9 +58,18 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: updateError.message }, { status: 500 })
   }
 
+  const { error: testsError } = await admin
+    .from('tests')
+    .update({ user_id: newUserId })
+    .eq('user_id', anonUserId)
+
+  if (testsError) {
+    return NextResponse.json({ error: testsError.message }, { status: 500 })
+  }
+
   await admin.auth.admin.deleteUser(anonUserId)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   await (admin as any).from('pending_guest_merges').delete().eq('token', mergeToken)
 
-  return NextResponse.json({ ok: true })
+  return clearCookie(NextResponse.json({ ok: true }))
 }
